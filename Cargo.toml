@@ -1,0 +1,23 @@
+[package]
+name = "flow_test"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+futures = "0.3.31"
+hex = "0.4.3"
+tokio = { version = "1.44.1", features = ["full"] }
+tonic = "0.12.3"
+prost = "0.13.5"
+prost-types = "0.13.5"
+sha3 = "0.10"
+p256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
+elliptic-curve = "0.13"  # Added for GenericArray
+rlp = "0.6.1"
+secp256k1 = "0.30.0"
+sha2 = "0.10.8"
+
+[build-dependencies]
+tonic-build = "0.12.3"
+glob = "0.3.2"

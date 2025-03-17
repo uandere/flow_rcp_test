@@ -1,8 +1,7 @@
 use futures::StreamExt;
 use rlp::RlpStream;
 use secp256k1::{Message, Secp256k1, SecretKey};
-use sha2::{Digest, Sha256};
-use std::io::Read;
+use sha3::{Digest, Sha3_256 as Sha256};
 use std::time::Duration;
 use tokio::select;
 use tonic::{Request, transport::Channel};
@@ -59,8 +58,8 @@ impl TransactionStatus {
 }
 
 // Domain tag for Flow transaction signing
-const TRANSACTION_DOMAIN_TAG: &[u8] =
-    b"\x46\x4c\x4f\x57\x20\x54\x72\x61\x6e\x73\x61\x63\x74\x69\x6f\x6e"; // "FLOW Transaction"
+const TRANSACTION_DOMAIN_TAG: &str =
+    "464c4f572d56302e302d7472616e73616374696f6e0000000000000000000000";
 
 const MAX_WAIT_TIME: Duration = Duration::from_secs(60); // Maximum wait time (60 seconds)
 
@@ -91,6 +90,7 @@ fn print_public_key_debug(private_key: &SecretKey) {
         "Public Key (compressed): {}",
         hex::encode(public_key.serialize())
     );
+    println!("Private key: {}", private_key.display_secret().to_string());
     println!(
         "Public Key (uncompressed): {}",
         hex::encode(public_key.serialize_uncompressed())
@@ -103,10 +103,10 @@ fn print_transaction_hash_debug(tx: &Transaction) {
     let hash = hash_transaction(tx);
 
     println!("=== Transaction Hash Debug ===");
-    println!("Domain Tag: {}", hex::encode(TRANSACTION_DOMAIN_TAG));
+    println!("Domain Tag: {}", TRANSACTION_DOMAIN_TAG);
     println!(
         "Script (first 50 bytes): {}",
-        hex::encode(&tx.script[..50.min(tx.script.len())])
+        hex::encode(&tx.script)
     );
     println!("Arguments Count: {}", tx.arguments.len());
     println!(
@@ -127,7 +127,7 @@ fn print_transaction_hash_debug(tx: &Transaction) {
         println!("  Authorizer {}: {}", i, hex::encode(auth));
     }
 
-    println!("Final Hash (SHA2-256): {}", hex::encode(&hash));
+    println!("Final Hash (SHA3-256): {}", hex::encode(&hash));
     println!("============================");
 }
 
@@ -139,7 +139,7 @@ fn print_signature_debug(
 ) {
     let secp = Secp256k1::new();
     let public_key = secp256k1::PublicKey::from_secret_key(&secp, private_key);
-    let message = Message::from_slice(hash).unwrap();
+    let message = Message::from_digest(<[u8; 32]>::try_from(hash).unwrap());
 
     println!("=== Signature Debug ===");
     println!("Message to sign (hash): {}", hex::encode(hash));
@@ -162,15 +162,12 @@ fn print_signature_debug(
 
     // Verify the signature
     let verification_result = secp.verify_ecdsa(&message, signature, &public_key);
-    println!(
-        "Local signature verification: {}",
-        &{match verification_result {
+    println!("Local signature verification: {}", &{
+        match verification_result {
             Ok(_) => "✅ Valid".to_string(),
-            Err(e) => {
-                format!("❌ Invalid: {}", e).to_string()
-            }
-        }}
-    );
+            Err(e) => format!("❌ Invalid: {}", e).to_string(),
+        }
+    });
 
     println!("======================");
 }
@@ -216,16 +213,16 @@ async fn get_reference_block_id(
     Ok(block.id)
 }
 
-/// Calculate the hash of a transaction for signing using RLP encoding and SHA2-256
+/// Calculate the hash of a transaction for signing using RLP encoding and SHA3-256
 fn hash_transaction(tx: &Transaction) -> Vec<u8> {
-    // Use SHA2-256 instead of SHA3-256
+    // Use SHA3-256 instead of SHA2-256
     let mut hasher = Sha256::new();
 
     // Add domain tag
-    hasher.update(TRANSACTION_DOMAIN_TAG);
+    hasher.update(hex_to_bytes(TRANSACTION_DOMAIN_TAG).unwrap());
 
     // Use RLP encoding to ensure canonical format
-    let mut rlp = RlpStream::new();
+    let mut rlp: RlpStream = RlpStream::new_list(2);
     rlp.begin_list(9); // Transaction has 9 fields
 
     // 1. Script
@@ -245,7 +242,7 @@ fn hash_transaction(tx: &Transaction) -> Vec<u8> {
 
     // 5. Proposal Key
     if let Some(pk) = &tx.proposal_key {
-        rlp.begin_list(3);
+        // No need to begin a list here as per the fix
         rlp.append(&pk.address);
         rlp.append(&pk.key_id);
         rlp.append(&pk.sequence_number);
@@ -272,12 +269,14 @@ fn hash_transaction(tx: &Transaction) -> Vec<u8> {
     }
 
     // 9. Envelope Signatures (not included in the hash)
-    rlp.begin_list(0);
+    // Removed as per diff
 
     // Finish RLP encoding
     let encoded = rlp.out();
 
-    // Hash the encoded transaction with SHA2-256
+    println!("RLP encoded: {}", hex::encode(encoded.clone()));
+
+    // Hash the encoded transaction with SHA3-256
     hasher.update(&encoded);
 
     // Return the hash
@@ -315,10 +314,11 @@ fn sign_transaction(
         // Convert to array (infallible after length check)
         Ok(vec.try_into().unwrap_or_else(|_| unreachable!()))
     }
-    
 
     // Create a message from the hash
     let message = Message::from_digest(vec_to_array(hash.clone()).unwrap());
+
+    println!("Message to sign: {}", hex::encode(&message[..]));
 
     // Sign the message
     let signature = secp.sign_ecdsa(&message, private_key);
@@ -452,7 +452,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut transaction = Transaction {
         script: r#"
             transaction {
-                prepare(signer: AuthAccount) {
+                prepare(signer: &Account) {
                     log("Transaction executed")
                 }
                 execute {
@@ -460,8 +460,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         "#
-        .as_bytes()
-        .to_vec(),
+            .as_bytes()
+            .to_vec(),
         arguments: vec![],
         reference_block_id,
         gas_limit: 100,
@@ -476,7 +476,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         envelope_signatures: vec![],
     };
 
-    // Sign the transaction with secp256k1 and SHA2-256
+    // Sign the transaction with secp256k1 and SHA3-256
     // Pass the account for debugging purposes
     sign_transaction(
         &mut transaction,

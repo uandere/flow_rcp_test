@@ -1,0 +1,121 @@
+diff --git a/src/main.rs b/src/main.rs
+index 05b0117..6b5093a 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,7 +1,7 @@
+ use futures::StreamExt;
+ use rlp::RlpStream;
+ use secp256k1::{Message, Secp256k1, SecretKey};
+-use sha2::{Digest, Sha256};
++use sha3::{Digest, Sha3_256 as Sha256};
+ use std::io::Read;
+ use std::time::Duration;
+ use tokio::select;
+@@ -59,8 +59,11 @@ impl TransactionStatus {
+ }
+ 
+ // Domain tag for Flow transaction signing
+-const TRANSACTION_DOMAIN_TAG: &[u8] =
+-    b"\x46\x4c\x4f\x57\x20\x54\x72\x61\x6e\x73\x61\x63\x74\x69\x6f\x6e"; // "FLOW Transaction"
++// const TRANSACTION_DOMAIN_TAG: &[u8] =
++// b"\x46\x4c\x4f\x57\x20\x54\x72\x61\x6e\x73\x61\x63\x74\x69\x6f\x6e"; // "FLOW Transaction"
++
++const TRANSACTION_DOMAIN_TAG: &str =
++    "464c4f572d56302e302d7472616e73616374696f6e0000000000000000000000";
+ 
+ const MAX_WAIT_TIME: Duration = Duration::from_secs(60); // Maximum wait time (60 seconds)
+ 
+@@ -91,6 +94,7 @@ fn print_public_key_debug(private_key: &SecretKey) {
+         "Public Key (compressed): {}",
+         hex::encode(public_key.serialize())
+     );
++    println!("Private key: {}", private_key.display_secret().to_string());
+     println!(
+         "Public Key (uncompressed): {}",
+         hex::encode(public_key.serialize_uncompressed())
+@@ -103,10 +107,11 @@ fn print_transaction_hash_debug(tx: &Transaction) {
+     let hash = hash_transaction(tx);
+ 
+     println!("=== Transaction Hash Debug ===");
+-    println!("Domain Tag: {}", hex::encode(TRANSACTION_DOMAIN_TAG));
++    println!("Domain Tag: {}", TRANSACTION_DOMAIN_TAG);
+     println!(
+         "Script (first 50 bytes): {}",
+-        hex::encode(&tx.script[..50.min(tx.script.len())])
++        // hex::encode(&tx.script[..50.min(tx.script.len())])
++        hex::encode(&tx.script)
+     );
+     println!("Arguments Count: {}", tx.arguments.len());
+     println!(
+@@ -162,15 +167,12 @@ fn print_signature_debug(
+ 
+     // Verify the signature
+     let verification_result = secp.verify_ecdsa(&message, signature, &public_key);
+-    println!(
+-        "Local signature verification: {}",
+-        &{match verification_result {
++    println!("Local signature verification: {}", &{
++        match verification_result {
+             Ok(_) => "✅ Valid".to_string(),
+-            Err(e) => {
+-                format!("❌ Invalid: {}", e).to_string()
+-            }
+-        }}
+-    );
++            Err(e) => format!("❌ Invalid: {}", e).to_string(),
++        }
++    });
+ 
+     println!("======================");
+ }
+@@ -222,10 +224,10 @@ fn hash_transaction(tx: &Transaction) -> Vec<u8> {
+     let mut hasher = Sha256::new();
+ 
+     // Add domain tag
+-    hasher.update(TRANSACTION_DOMAIN_TAG);
++    hasher.update(hex_to_bytes(TRANSACTION_DOMAIN_TAG).unwrap());
+ 
+     // Use RLP encoding to ensure canonical format
+-    let mut rlp = RlpStream::new();
++    let mut rlp: RlpStream = RlpStream::new_list(2);
+     rlp.begin_list(9); // Transaction has 9 fields
+ 
+     // 1. Script
+@@ -245,7 +247,7 @@ fn hash_transaction(tx: &Transaction) -> Vec<u8> {
+ 
+     // 5. Proposal Key
+     if let Some(pk) = &tx.proposal_key {
+-        rlp.begin_list(3);
++        // rlp.begin_list(3);
+         rlp.append(&pk.address);
+         rlp.append(&pk.key_id);
+         rlp.append(&pk.sequence_number);
+@@ -272,11 +274,13 @@ fn hash_transaction(tx: &Transaction) -> Vec<u8> {
+     }
+ 
+     // 9. Envelope Signatures (not included in the hash)
+-    rlp.begin_list(0);
++    // rlp.begin_list(0);
+ 
+     // Finish RLP encoding
+     let encoded = rlp.out();
+ 
++    println!("RLP encoded: {}", hex::encode(encoded.clone()));
++
+     // Hash the encoded transaction with SHA2-256
+     hasher.update(&encoded);
+ 
+@@ -315,11 +319,12 @@ fn sign_transaction(
+         // Convert to array (infallible after length check)
+         Ok(vec.try_into().unwrap_or_else(|_| unreachable!()))
+     }
+-    
+ 
+     // Create a message from the hash
+     let message = Message::from_digest(vec_to_array(hash.clone()).unwrap());
+ 
++    println!("Message to sign: {}", hex::encode(&message[..]));
++
+     // Sign the message
+     let signature = secp.sign_ecdsa(&message, private_key);
+ 
